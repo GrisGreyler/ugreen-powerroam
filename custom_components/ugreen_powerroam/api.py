@@ -308,10 +308,20 @@ class UgreenTelemetryHub:
                         _now = time.monotonic()
                         _last = self.__dict__.get("_last_frame_ts")
                         self._last_frame_ts = _now
-                        _LOGGER.debug("frame dt=%s usb_sw=%s discharge_pow=%s", "first" if _last is None else f"{_now - _last:.1f}", payload.get("usb_sw"), payload.get("discharge_pow"))
+                        _LOGGER.debug(
+                            "frame dt=%s usb_sw=%s discharge_pow=%s",
+                            "first" if _last is None else f"{_now - _last:.1f}",
+                            payload.get("usb_sw"),
+                            payload.get("discharge_pow"),
+                        )
                         prev = self.data if isinstance(self.data, dict) else {}
                         if payload.get("usb_sw") != prev.get("usb_sw"):
-                            _LOGGER.debug("usb_sw %r -> %r | raw=%s", prev.get("usb_sw"), payload.get("usb_sw"), msg.data)
+                            _LOGGER.debug(
+                                "usb_sw %r -> %r | raw=%s",
+                                prev.get("usb_sw"),
+                                payload.get("usb_sw"),
+                                msg.data,
+                            )
                         new = {k: v for k, v in payload.items() if v is not None}
                         pending = self.__dict__.setdefault("_pending", {})
                         for key in ("usb_sw",):
