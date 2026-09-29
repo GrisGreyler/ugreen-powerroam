@@ -1,0 +1,41 @@
+name: Gemini Auto Coder
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  gemini-fix:
+    if: contains(github.event.issue.labels.*.name, 'gemini') || github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Aider & Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aider-chat
+
+      - name: Run Gemini to Edit Code
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          aider --model gemini/gemini-1.5-pro --no-auto-commits \
+            --message "${{ github.event.issue.title }}. ${{ github.event.issue.body }}" \
+            --yes
+          
+          git config --global user.name "Gemini Bot"
+          git config --global user.email "gemini-bot@github.com"
+          git add .
+          git commit -m "Auto-fix by Gemini: ${{ github.event.issue.title }}" || exit 0
+          git push
