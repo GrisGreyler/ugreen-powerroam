@@ -32,8 +32,10 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
+          set -e
           PROMPT="$ISSUE_TITLE. $ISSUE_BODY"
-          aider --model gemini/gemini-2.5-pro \
+          aider --model gemini/gemini-3.1-pro-preview \
+                --weak-model gemini/gemini-3.1-pro-preview \
                 --message "$PROMPT" \
                 --no-auto-commits \
                 --yes \
