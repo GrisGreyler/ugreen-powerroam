@@ -336,18 +336,21 @@ class UgreenTelemetryHub:
                             )
                         new = {k: v for k, v in payload.items() if v is not None}
                         pending = self.__dict__.setdefault("_pending", {})
+                        held = False
                         for key in ("usb_sw", "work_mode"):
                             if key in new and key in prev and new[key] != prev[key]:
                                 cand = pending.get(key)
                                 if cand is None or cand[0] != new[key]:
                                     pending[key] = (new[key], _now)
-                                    new[key] = prev[key]
-                                elif _now - cand[1] < 5.0:
-                                    new[key] = prev[key]
+                                    held = True
+                                elif _now - cand[1] < 15.0:
+                                    held = True
                                 else:
                                     pending.pop(key, None)
                             else:
                                 pending.pop(key, None)
+                        if held:
+                            continue
                         self.data = {**prev, **new}
                         self._notify()
             finally:
