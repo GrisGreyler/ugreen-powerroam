@@ -33,10 +33,12 @@ jobs:
           ISSUE_BODY: ${{ github.event.issue.body }}
         run: |
           PROMPT="$ISSUE_TITLE. $ISSUE_BODY"
-          aider --model gemini/gemini-2.0-flash \
+          aider --model gemini/gemini-2.5-pro \
                 --message "$PROMPT" \
                 --no-auto-commits \
-                --yes
+                --yes \
+                custom_components/ugreen_powerroam/*.py \
+                tests/*.py
 
       - name: Commit and Push changes
         run: |
