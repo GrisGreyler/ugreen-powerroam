@@ -34,13 +34,14 @@ jobs:
         run: |
           set -e
           PROMPT="$ISSUE_TITLE. $ISSUE_BODY"
-          aider --model gemini/gemini-3.1-pro-preview \
-                --weak-model gemini/gemini-3.1-pro-preview \
+          aider --model gemini/gemini-3.5-flash \
+                --weak-model gemini/gemini-3.5-flash \
                 --message "$PROMPT" \
                 --no-auto-commits \
                 --yes \
                 custom_components/ugreen_powerroam/*.py \
                 tests/*.py
+          git diff --quiet && { echo "Aider made no changes"; exit 1; }
 
       - name: Commit and Push changes
         run: |
