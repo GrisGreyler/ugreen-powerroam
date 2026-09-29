@@ -170,6 +170,7 @@ class UgreenApiClient:
             headers=self._headers(),
         ) as resp:
             result = await resp.json(content_type=None)
+        _LOGGER.debug("setDeviceInfo %s=%s -> %s", key, value, result)
         if result.get("errcode") != 200:
             raise UgreenApiError(f"setDeviceInfo({key}={value}) failed: {result}")
 
@@ -315,6 +316,17 @@ class UgreenTelemetryHub:
                             payload.get("discharge_pow"),
                         )
                         prev = self.data if isinstance(self.data, dict) else {}
+                        for _k in (
+                            "switch_ac",
+                            "switch_dc",
+                            "switch_all",
+                            "switch_conpower",
+                            "lamp_sw",
+                        ):
+                            if _k in payload and payload[_k] != prev.get(_k):
+                                _LOGGER.debug(
+                                    "%s %r -> %r", _k, prev.get(_k), payload[_k]
+                                )
                         if payload.get("work_mode") != prev.get("work_mode"):
                             _diff = {
                                 k: (prev.get(k), v)
@@ -337,7 +349,13 @@ class UgreenTelemetryHub:
                         new = {k: v for k, v in payload.items() if v is not None}
                         pending = self.__dict__.setdefault("_pending", {})
                         held = False
-                        for key in ("usb_sw", "work_mode"):
+                        for key in (
+                            "usb_sw",
+                            "work_mode",
+                            "switch_ac",
+                            "switch_dc",
+                            "lamp_sw",
+                        ):
                             if key in new and key in prev and new[key] != prev[key]:
                                 cand = pending.get(key)
                                 if cand is None or cand[0] != new[key]:
