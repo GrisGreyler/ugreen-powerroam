@@ -1,332 +1,204 @@
 # UGREEN PowerRoam for Home Assistant
 
-[![tests](https://github.com/tanka8/ugreen-powerroam/actions/workflows/tests.yml/badge.svg)](https://github.com/tanka8/ugreen-powerroam/actions/workflows/tests.yml)
-[![hacs](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://hacs.xyz)
-
 Home Assistant integration for UGREEN power stations that use the **UGREEN app**
-(`com.powerroam.pps`). Reverse engineered against a **PowerRoam 1200W**.
+(`com.powerroam.pps`). Fork of [tanka8/ugreen-powerroam](https://github.com/tanka8/ugreen-powerroam)
+(MIT), developed against a **PowerRoam 1200W**.
 
-Two transports, your choice at setup:
+> **Tested on one model, one account.** Other PowerRoam models probably share the
+> same cloud API and field names, but that is an assumption.
 
-* **Bluetooth (recommended)** - talks to the unit directly. No account, no internet,
-  no WiFi. State arrives in under a second.
-* **Cloud** - UGREEN's own API. Needs an account and a working internet connection,
-  and pushes state in bursts about every 3 seconds
-(see [Cloud update cadence](#cloud-update-cadence)).
+## Transports
 
-> **Tested on one model, one account.** Everything here was worked out from a
-> PowerRoam 1200W. Other PowerRoam models almost certainly share the same cloud API
-> and field names, but that is an assumption, not a confirmation - see
-> [Known gaps](#known-gaps).
+Chosen at setup:
 
-## Why Bluetooth, and why the cloud came first
+| | Bluetooth | Cloud |
+|---|---|---|
+| Account / internet / WiFi on the unit | not needed | needed |
+| Update rate | every ~0.6 s (written to HA at most every 2 s) | bursts of 3 identical frames every ~3.1 s, then a ~15.5 s pause |
+| Range | Bluetooth range of the HA host (or a proxy) | anywhere |
+| UGREEN app at the same time | **no**: the unit accepts one BLE connection | yes |
+| Entity identity | serial number | serial number (same) |
 
-Over **IP** the device has no local control path at all. A full TCP port scan of all
-65535 ports found nothing open - it only holds an outbound WiFi connection to UGREEN's
-own cloud (`hw-powerapi.ugpps.com`), not a Tuya-style local API. `tuya-local`,
-LocalTuya and friends are irrelevant here: this is UGREEN's own stack. That is why the
-first version of this integration was cloud-only.
+Both entries use the same serial as identity, so you can switch transport and keep
+entity history: remove the old entry, add the new one. Two entries for one unit cannot
+coexist (deliberate).
 
-Over **Bluetooth** it is a different story. The app carries a complete parallel BLE
-transport that it uses whenever there is no WiFi, and the power station runs an open
-GATT server to serve it - no pairing, no bonding, no encryption. That transport has
-since been confirmed against real hardware: 4,502 frames decoded with zero CRC
-failures, and the device pushes its entire status set unprompted about every 0.6
-seconds, roughly 24x faster than the cloud.
-
-So Bluetooth is the better path in every respect except range. The cloud transport is
-still there if you want to reach the unit from outside Bluetooth range, or if you have
-no adapter near it.
-
-Getting a proxy in front of the app's traffic also wasn't the usual "trust a CA on an
-emulator" story: the app ships **ARM64-only** native libraries, and the emulator
-setup that works for other Android reverse-engineering (x86_64 with a writable
-system partition) can't run it, while an ARM64 system image can't run on an x86_64
-host at all - Google dropped software ARM emulation from the current emulator. The
-capture ended up done on a real phone instead, with the APK decompiled, a
-`network_security_config.xml` added to trust a user CA, and re-signed with a local
-debug key.
+The unit has no local IP control path: a full TCP scan of all 65535 ports found nothing
+open. It only holds an outbound WiFi connection to `hw-powerapi.ugpps.com`. Local
+control is possible only over Bluetooth. Disconnecting the unit from the cloud entirely
+means removing WiFi from the unit or blocking it at the router; using the Bluetooth
+transport in HA does not do that by itself.
 
 ## Entities
 
 | Entity | Type | Notes |
 |---|---|---|
-| AC Output | `switch` | |
-| DC Output | `switch` | |
-| USB Output | `switch` | |
-| Flashlight | `switch` | |
+| AC Output, DC Output, USB Output, Flashlight | `switch` | both transports |
 | Battery | `sensor` | % |
-| Battery Health | `sensor` | % |
-| Battery Cycle Count | `sensor` | |
-| Battery Capacity Remaining | `sensor` | raw units - see [Known gaps](#known-gaps) |
-| Discharge Time Remaining | `sensor` | hours |
-| Charge Time Remaining | `sensor` | hours |
-| Total / AC / DC / USB Output Power | `sensor` | W |
-| Input Power | `sensor` | W |
-| AC Input / Output Voltage, DC Voltage | `sensor` | V |
-| Battery Temperature ×2, Inverter Temperature ×2 | `sensor` | °C |
-| Fault Code | `sensor` | raw code, empty when healthy |
-| Work Mode | `sensor` | raw numeric mode - meaning unconfirmed |
+| Battery Health, Cycle Count | `sensor` | diagnostic |
+| Battery Capacity Remaining | `sensor` | raw units, uncalibrated |
+| Discharge / Charge Time Remaining | `sensor` | native seconds, displayed in hours |
+| Total / AC / DC / USB Output Power, Input Power | `sensor` | W |
+| Battery Temperature 1/2, Inverter Temperature 1/2 | `sensor` | °C, diagnostic |
+| Work Mode | `sensor` | raw numeric mode, meaning unconfirmed |
+| Cell 1-7 Voltage | `sensor` | mV, diagnostic |
+| AC Input / AC Output / DC Voltage, Fault Code | `sensor` | cloud only, see [Known gaps](#known-gaps) |
 
-Entities are only created for the fields this integration knows about - see
-[Known gaps](#known-gaps) for what the device reports but isn't exposed yet.
+Entities are created only for fields the chosen transport can fill (`BLE_SENSORS` in
+`const.py` for Bluetooth; everything in `SENSORS` for cloud).
 
-Only the entities a transport can actually fill are created, so neither setup is left
-with a column of permanently unavailable entities. Bluetooth adds per-cell voltages;
-the cloud adds the temperature, voltage, battery-health and fault sensors that the BLE
-protocol either does not carry or does not carry in a confirmed form.
-
-| | Bluetooth | Cloud |
-|---|---|---|
-| All four switches | yes | yes |
-| Battery %, charge/discharge time remaining | yes | yes |
-| Total / AC / DC / USB power, input power | yes | yes |
-| Work mode | yes | yes |
-| Battery and inverter temperatures | yes | yes |
-| Battery health, cycle count, capacity remaining | yes | yes |
-| Cell 1-7 voltage | **yes** | no |
-| AC/DC voltages, fault code | no | reports nothing - see below |
-
-State is **pushed** on both transports - about every 0.6 seconds over Bluetooth (then
-coalesced, so Home Assistant is not woken 1.6 times a second), and in bursts about every 3 seconds over the cloud WebSocket
-(see [Cloud update cadence](#cloud-update-cadence)). Nothing polls.
+The cloud server reports per-cell voltages too (`cell1_vol` ... `cell7_vol`, plus
+`cell_total_vol`); this is not a Bluetooth-only feature.
 
 ## Install
 
-**HACS** - three dots menu, Custom repositories, add
-`https://github.com/tanka8/ugreen-powerroam` as an *Integration*, then install and
+**Docker (how this fork is run).** Clone the repo and bind-mount the component into the
+container read-only. A symlink into `custom_components` does not work inside a
+container.
+
+```yaml
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    network_mode: host
+    volumes:
+      - ./config:/config
+      - /path/to/ugreen-powerroam/custom_components/ugreen_powerroam:/config/custom_components/ugreen_powerroam:ro
+```
+
+Update:
+
+```bash
+cd /path/to/ugreen-powerroam && git pull
+docker restart homeassistant
+```
+
+**HACS** - Custom repositories, add this repository as an *Integration*, install,
 restart.
 
-**Manually** - copy `custom_components/ugreen_powerroam/` into your
-`config/custom_components/` and restart.
-
-Then **Settings, Devices & services, Add integration, UGREEN PowerRoam**, and pick a
-transport.
-
-If Home Assistant can already see the power station over Bluetooth it will usually
-offer it to you unprompted, without your having to add anything by hand.
-
-**For Bluetooth** you need a Bluetooth adapter within range of the unit and the
-`bluetooth` integration set up. **Close the UGREEN phone app first** - the power
-station accepts only one Bluetooth connection at a time, so the app and Home Assistant
-cannot both hold it.
-
-Setup reads the unit's serial number over BLE and uses it as the entry's identity,
-which is the same identity the cloud entry uses. (The unit reports two serials -
-the one the cloud identifies it by is the first.) That means **you can migrate from
-cloud to Bluetooth and keep your entity history**: remove the cloud entry, add the
-Bluetooth one, and the entities reattach. It also means the two cannot be configured
-side by side for one device, which is deliberate - two entries for one power station
-would give you two of every entity.
-
-**For the cloud** sign in with your UGREEN app account.
-
-> **Upgrading from v1.1.0?** That release identified Bluetooth entries by the wrong
-> one of the unit's two serials, so a Bluetooth entry could not recognise the cloud
-> entry for the same power station - you would get both, with two of every shared
-> entity. Remove the Bluetooth entry and add it again on v1.1.1 or later. Nothing
-> else is affected, and cloud-only setups were never involved.
+Then **Settings, Devices & services, Add integration, UGREEN PowerRoam**, pick a
+transport. For Bluetooth the HA `bluetooth` integration and an adapter within range of
+the unit are required (in Docker, HA needs access to the host's Bluetooth stack), and
+the UGREEN phone app must be closed. For cloud, sign in with the UGREEN app account.
 
 ## How it works
 
-Two calls set up the session, one drives control, one carries live state:
+### Cloud
 
-* **Auth** - `GET /app/v1/sa/encrypt/key` hands back an RSA public key and a `uuid`.
-  Email and password are each RSA/PKCS1v1.5-encrypted with that key (this is what the
-  app itself does, not something added here) and posted to `POST /app/v1/login`,
-  which returns a session `token` sent as a plain header on every later request - no
-  OAuth involved.
-* **Device list** - `GET /app/v1/device/list` returns the account's device(s); the
-  first one's `deviceModelName` doubles as its id everywhere else.
-* **Control** - one generic endpoint for everything: `POST
-  /app/v1/device/setDeviceInfo` with `{"deviceName": ..., "map": {"switch_ac": 1}}`.
-  Every switch in this integration is the same call with a different key.
-* **Telemetry** - a WebSocket at `wss://hw-powerapi.ugpps.com:8089/app/device/websocket/{userId}/{deviceName}`,
-  authenticated with the same `token` header used for REST. Sending
-  `{"userId": ..., "content": "ugreenSocketConnection"}` after connecting both
-  subscribes and, resent periodically, acts as the keepalive. The server then pushes
-  one flat JSON object per update with every field the device reports - no envelope,
-  no per-field diffing.
+- **Auth** - `GET /app/v1/sa/encrypt/key` returns an RSA public key and `uuid`. Email
+  and password are RSA/PKCS1v1.5-encrypted and posted to `POST /app/v1/login`, which
+  returns a `token` sent as a header on later requests.
+- **Device list** - `GET /app/v1/device/list`; the first device's `deviceModelName` is
+  its id everywhere.
+- **Control** - `POST /app/v1/device/setDeviceInfo` with
+  `{"deviceName": ..., "map": {"switch_ac": 1}}`. Every switch is this call with a
+  different key.
+- **Telemetry** - WebSocket
+  `wss://hw-powerapi.ugpps.com:8089/app/device/websocket/{userId}/{deviceName}`,
+  same `token` header. Sending `{"userId": ..., "content": "ugreenSocketConnection"}`
+  subscribes and, repeated every 25 s, keeps the connection alive. The server pushes
+  one flat JSON object with every field the device reports.
+- **Recovery** - no telemetry for 90 s means the socket is treated as dead and
+  reconnected (backoff 5 to 60 s). After 3 consecutive failures the client logs in
+  again for a fresh token. Entities go unavailable while the socket is down.
 
 ### Bluetooth
 
-The wire format lives in `protocol.py`, which is pure Python and fully unit tested
-without hardware. Frames look like this:
+Wire format is in `protocol.py` (pure Python, unit tested against frames captured from
+a real unit):
 
 ```
 5A A5 | A1 C0 | cmd | len (uint16 LE) | data | crc (uint16 LE)
 ```
 
-CRC is Modbus CRC-16. The `A1 C0` field is direction: everything the device sends
-back carries it byte-swapped as `C0 A1`. GATT service `ABF0` exposes `ABF1` to write
-to and `ABF2` to subscribe to - and note the service is **not advertised**, so
-discovery matches on the local name (`ugreen gs1200`) instead.
+CRC is Modbus CRC-16; device replies carry the direction bytes swapped (`C0 A1`). GATT
+service `ABF0`: write to `ABF1`, subscribe to `ABF2`. The service is not advertised,
+so discovery matches the local name (`ugreen*`, observed `ugreen gs1200`). No pairing,
+bonding or encryption.
 
-**The one trap worth knowing about**, because it bites hard: the app uses **two
-different field layouts for the same `0x16` switch opcode**. What the device reports
-has 12 fields; what you write has 11, with no slot for `lowBatteryWarning`. Echo a
-received payload straight back as a write and every field after the first lands one
-position early. Doing exactly that during development silently switched battery
-preserving mode off on a real unit. `protocol.py` keeps the two layouts strictly
-apart and only ever converts through named fields, and there are regression tests
-pinning it.
+**Trap:** the `0x16` switch opcode has two different layouts. The device reports 12
+fields, a write takes 11 (no `lowBatteryWarning`). Echoing a received payload back as a
+write shifts every field after the first by one position; this once silently switched
+battery preserving mode off. `protocol.py` keeps the layouts apart and refuses to build
+a write from a partial state. `0x16` replaces the whole state, so a write needs the
+current values of all eleven fields.
 
-`0x16` is also a whole-state replace rather than a patch, so a write has to know the
-current state of all eleven fields. `encode_switch_state()` refuses to build a frame
-from a partial state, and the BLE transport refuses to send one before the device has
-reported in.
+## Cloud behaviour worth knowing
 
-## Cloud update cadence
+**Update cadence.** Measured on one unit over ~15 minutes (199 frames, 2026-09-29):
+every ~3.1 s a burst of 3 identical frames (1-3 ms apart); after six bursts a pause of
+~15.5 s, so one cycle is ~33 s. Average gap 1.7 s, median 0 s, longest 18.6 s. One
+unit, one short sample; UGREEN can change this.
 
-[#cloud-update-cadence](#cloud-update-cadence)
+**Flapping values.** The cloud occasionally sends a frame where `usb_sw` (and also
+`work_mode`) briefly takes another value for a second or two with no physical change,
+while the other switches stay unchanged. Cause unknown; the frame contains every key,
+so it is not a missing field.
 
-Measured on one PowerRoam over about 15 minutes (199 telemetry frames, 2026-09-29),
-logging the time between frames received on the cloud WebSocket:
+**Filter in `api.py`.** For `usb_sw`, `work_mode`, `switch_ac`, `switch_dc` and
+`lamp_sw`, a frame in which one of these differs from the current state is dropped
+entirely until the same new value has been seen again at least 15 s after it first
+appeared. Consequences:
 
-- Every ~3.1 s the server sends a **burst of 3 identical frames**, 1-3 ms apart.
-- After six bursts there is a **pause of ~15.5 s**, so one cycle is ~33 s.
-- Overall: ~13 frames per minute, average gap 1.7 s, median 0 s (because of the
-  duplicates), longest gap 18.6 s.
+- Toggles made from HA update the state optimistically, so they are not delayed; stale
+  frames still carrying the old value are held back instead of flipping the switch
+  back.
+- A change made on the unit itself shows up in HA only after this confirmation, i.e.
+  roughly 15 to 33 s later.
+- Because whole frames are dropped, other values in a held frame are delayed too.
 
-So the earlier "roughly every 15 seconds" figure describes only the long pause, not the
-typical rate. It is one unit, one account and one short sample: other models or
-firmware may differ, and UGREEN can change this at any time.
-
-**Transient `usb_sw` value.** In the same session the cloud once sent `usb_sw: 0` for
-about 2 seconds (13:20:45 -> 13:20:47) while nothing changed on the unit; the other
-switches did not change in that frame. The cause is unknown (it is not a missing
-field: the frame carried every key). To see this in your own log, enable debug logging
-for `custom_components.ugreen_powerroam`.
+Debug logging: enable `custom_components.ugreen_powerroam` in `logger:` to log frame
+timing, `usb_sw` / `work_mode` / switch transitions and raw frames.
 
 ## Known gaps
 
-* **The AC/DC voltage sensors and the fault code never report anything**, on
-  either transport, at least on the 1200W this was built against. Every value
-  they have ever produced is `0.0` (or empty, for the fault code), including
-  while the unit was charging from mains with the inverter clearly working -
-  which is exactly when an AC input voltage should have shown up.
+- **Cell voltages over cloud.** Entities `cell_voltage_1..7` are created on both
+  transports, but the cloud frame names the fields `cell{n}_vol` while BLE decoding
+  produces `cell_voltage_{n}`. Check that the cloud path maps them in your build;
+  `const.py` still labels these sensors as BLE-only.
+- **AC/DC voltage sensors and Fault Code.** Upstream measurements on a 1200W gave
+  `0.0` / empty for `ac_in_vol`, `dc_vol` and `device_fault2` on both transports
+  (`ac_vol` is present in the sample frame). Not re-verified in this fork. Do not read
+  `0.0` as "0 V", read it as "the device did not report".
+- **U-Turbo** (`switch_conpower`) is not implemented: the write key was never
+  confirmed by capture.
+- **Settings are visible in telemetry but not controllable:** `bat_health_set`,
+  `low_sound_set`, `bee_sound_set_key`, `bee_sound_set_warning`, `display_bright_set`,
+  `low_power_al_set`, `time_shutdown`, `time_dis_shutdown`, `timeoff_set`,
+  `timeoff_cap`, `timeoff_zoom`, `ac_freq_set`, `car_charge_i_set`. Each needs its own
+  traffic capture to confirm write semantics. The app also has a parallel BLE
+  transport, so they are likely reachable over Bluetooth too (unverified).
+- **Reported but not exposed:** `cell_total_vol`, `usb1_vol`, `usb2_vol`, `type_c1_vol`,
+  `type_c2_vol`, `low_battery`, `self_check`, `switch_lock`, `switch_all`, firmware
+  version fields.
+- **Firmware update** is not supported.
+- **Raw values:** `bat_cap_remain` and `work_mode` scales and meanings are unconfirmed.
+- **No reauth flow:** the socket re-logs in by itself after failures, but wrong stored
+  credentials (changed password) are not surfaced in the UI.
+- **Single device per account:** only the first device from `device/list` is used.
+- Error messages are hardcoded English.
 
-  Over Bluetooth the corresponding bytes are flat zero too: `0x0B` bytes 0-5
-  stay zero with a real AC load drawing 17W, and the whole of `0x0C` reads zero.
-  So there is nothing to map, rather than something waiting to be decoded.
+## Development
 
-  They are left in place on the cloud path because another model may well fill
-  them in, and removing them would break anyone whose does. But do not expect
-  them to work here, and do not read `0.0` as "the AC output is at zero volts" -
-  read it as "this device never told anyone".
+- Issues in this repository can be picked up by a GitHub Actions workflow
+  (`.github/workflows/gemini-coder.yml`): a new issue, or the `gemini` label, runs
+  Aider with Gemini on the issue text and commits the result straight to `main`.
+  Review the diff after it runs.
+- Tests: `pip install pytest aiohttp cryptography && python -m pytest -v` (BLE codec,
+  frame parser, RSA login; no network or hardware). `tests_ha/` runs the config flow
+  inside Home Assistant (Linux/macOS only, CI runs it). CI also runs `ruff`, `hassfest`
+  and HACS validation.
+- Checking another model over Bluetooth (read-only): `pip install bleak &&
+  python scripts/hardware_check.py`. `--flashlight` blinks the light to test the write
+  path. If the switch block length differs from the 1200W's, do not write switches.
+- Adding a setting: capture the app's traffic (e.g. mitmproxy with a system-trusted
+  CA), toggle the control, note the `map` key and value, add it to `const.py`.
 
-* **U-Turbo is not implemented.** It showed up in the app but never got exercised
-  during capture, so which `map` key it sets is unconfirmed - guessing wrong here
-  risks writing to the wrong field. If you can capture it (see
-  [Contributing](#contributing)), it's a small addition.
-* **The set-and-forget settings aren't exposed**: battery preservation
-  (`bat_health_set`), quiet mode / tones (`low_sound_set`, `bee_sound_set_key`,
-  `bee_sound_set_warning`), display brightness (`display_bright_set`), low-battery
-  alarm (`low_power_al_set`), and the various shutdown timers (`time_shutdown`,
-  `time_dis_shutdown`, `timeoff_set`, `timeoff_cap`, `timeoff_zoom`) are all visible
-  in the telemetry but not wired up as controllable entities - each would need its
-  own capture to confirm the write semantics for something most people set once.
-* **`bat_cap_remain` and `work_mode` are raw, uncalibrated numbers.** Both are
-  exposed for graphing/automations, but their scale and the meaning of each
-  `work_mode` value weren't confirmed against a known reference during capture.
-* **There is still no reauth flow.** The telemetry loop now re-logs in by itself
-  after a few consecutive failures, so an expiring token no longer stops updates.
-  But if the stored credentials are genuinely wrong - a changed password, say -
-  nothing prompts you to fix them; the loop just keeps failing in the log.
-* **Single device per account assumed.** `device/list` is read once at setup and
-  only the first device is used; multi-device accounts aren't handled.
-* Error messages are hardcoded English rather than translation keys.
+## Credits and licence
 
-## Contributing
-
-**Before you spend time on anything here, read this: I make no guarantee to merge
-your change, to add anything you ask for, or to keep any of it working.** I might
-merge a pull request the day it arrives, or leave it open indefinitely, or decide
-the integration should not grow that feature at all. None of that is a judgement
-on the work - it is a hobby project in my house and I will not always have the
-time or interest. Open the PR if you want to, but open it on the understanding
-that it may sit there. Forking costs you nothing and owes you nothing.
-
-With that said, two things would genuinely help.
-
-### Confirming another model
-
-Everything here was worked out from a PowerRoam 1200W. If you have a different
-one, the quickest way to find out what it does is over Bluetooth - no account, no
-proxy, no patched APK:
-
-```bash
-pip install bleak
-python scripts/hardware_check.py
-```
-
-It only reads. It scans, dumps the GATT tree, listens to whatever your unit
-pushes, asks for the serial and version, and prints a report. Add `--flashlight`
-and it will also blink the light, which proves the write path without touching
-anything that might have a load on it. It cannot switch an AC, DC or USB output,
-and it does not go near the firmware update path.
-
-The useful part of that report is the **UNKNOWN opcodes** list - things your model
-sends that this integration does not recognise - and whether the switch block is
-the same length. Paste the whole thing into an issue.
-
-> If your unit reports a **different length switch block**, do not write switches
-> on it until the layout is understood. The 1200W already uses two different field
-> layouts for that one opcode and getting it wrong silently changes settings you
-> did not touch - see [the `0x16` section](#bluetooth) for what that looks like.
-
-### Adding one of the settings above
-
-Those need the cloud side, which means capturing the app's own traffic: proxy it
-(e.g. mitmproxy) through a system-trusted CA, toggle the control in question, and
-report what the `map` key and value turned out to be. No live device access is
-needed to review that - it is a one-line addition to `const.py`.
-
-## Tests
-
-```bash
-pip install pytest aiohttp cryptography
-python -m pytest -v
-```
-
-`tests/` runs the pure-Python parts - the BLE codec, the telemetry frame parser and
-the RSA encryption used at login - with no network, no hardware and no Home
-Assistant. The BLE tests run against byte strings captured from a real PowerRoam, so
-they are regression tests against the device rather than against the reverse
-engineered app bundle alone. The cloud parser is tested against a synthetic sample
-frame
-(`docs/sample_telemetry_frame.json`, shaped like a real capture but with fictional
-device identifiers), with no network, no Home Assistant, and no credentials.
-
-`tests_ha/` runs the config flow through Home Assistant itself using
-`pytest-homeassistant-custom-component`. **That harness does not work on Windows** -
-its autouse fixtures need a socketpair that `pytest-socket` blocks - so those run on
-Linux in CI. See `tests_ha/README.md`.
-
-CI also runs `ruff check`, `ruff format --check`, Home Assistant's `hassfest`, and
-the HACS validation action.
-
-## How this was built, and what to expect from it
-
-Most of the work here - reverse engineering the cloud protocol from a proxied capture
-of the UGREEN app, decoding the Bluetooth protocol from the app bundle and confirming
-it frame by frame against real hardware, writing the integration and its tests, and
-this README - was done by **Claude**, Anthropic's AI assistant. I directed it, made the calls it asked me to
-make, tested against my own device, and I run the result at home. I am not presenting
-it as my own unaided work.
-
-**I make no ownership claim over any of it.** MIT licensed, take it, fork it, do what
-you like. Nothing here is UGREEN's, endorsed by UGREEN, or affiliated with them.
-
-**There is no promise of support.** This scratched an itch in my house. I may fix
-things, I may not, and I may lose interest entirely. It talks to an undocumented API
-that UGREEN can break whenever they like, and if that happens I make no commitment to
-chase it. Issues and pull requests are welcome, but please treat a response as a
-favour rather than an expectation.
-
-If that is not a footing you are comfortable relying on, fork it - genuinely, that is
-the sensible move for anything you actually depend on.
-
-## Licence
+Based on tanka8/ugreen-powerroam. Reverse engineering, the integration and its tests
+were largely written by Claude (Anthropic) under the maintainer's direction and
+tested on the maintainer's own unit. Not affiliated with or endorsed by UGREEN; the
+API is undocumented and can change at any time. No support is promised.
 
 MIT.
