@@ -11,7 +11,8 @@ Two transports, your choice at setup:
 * **Bluetooth (recommended)** - talks to the unit directly. No account, no internet,
   no WiFi. State arrives in under a second.
 * **Cloud** - UGREEN's own API. Needs an account and a working internet connection,
-  and updates roughly every 15 seconds.
+  and pushes state in bursts about every 3 seconds
+(see [Cloud update cadence](#cloud-update-cadence)).
 
 > **Tested on one model, one account.** Everything here was worked out from a
 > PowerRoam 1200W. Other PowerRoam models almost certainly share the same cloud API
@@ -87,8 +88,8 @@ protocol either does not carry or does not carry in a confirmed form.
 | AC/DC voltages, fault code | no | reports nothing - see below |
 
 State is **pushed** on both transports - about every 0.6 seconds over Bluetooth (then
-coalesced, so Home Assistant is not woken 1.6 times a second), and roughly every 15
-seconds over the cloud WebSocket. Nothing polls.
+coalesced, so Home Assistant is not woken 1.6 times a second), and in bursts about every 3 seconds over the cloud WebSocket
+(see [Cloud update cadence](#cloud-update-cadence)). Nothing polls.
 
 ## Install
 
@@ -174,6 +175,28 @@ pinning it.
 current state of all eleven fields. `encode_switch_state()` refuses to build a frame
 from a partial state, and the BLE transport refuses to send one before the device has
 reported in.
+
+## Cloud update cadence
+
+[#cloud-update-cadence](#cloud-update-cadence)
+
+Measured on one PowerRoam over about 15 minutes (199 telemetry frames, 2026-09-29),
+logging the time between frames received on the cloud WebSocket:
+
+- Every ~3.1 s the server sends a **burst of 3 identical frames**, 1-3 ms apart.
+- After six bursts there is a **pause of ~15.5 s**, so one cycle is ~33 s.
+- Overall: ~13 frames per minute, average gap 1.7 s, median 0 s (because of the
+  duplicates), longest gap 18.6 s.
+
+So the earlier "roughly every 15 seconds" figure describes only the long pause, not the
+typical rate. It is one unit, one account and one short sample: other models or
+firmware may differ, and UGREEN can change this at any time.
+
+**Transient `usb_sw` value.** In the same session the cloud once sent `usb_sw: 0` for
+about 2 seconds (13:20:45 -> 13:20:47) while nothing changed on the unit; the other
+switches did not change in that frame. The cause is unknown (it is not a missing
+field: the frame carried every key). To see this in your own log, enable debug logging
+for `custom_components.ugreen_powerroam`.
 
 ## Known gaps
 

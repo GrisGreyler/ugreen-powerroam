@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import logging
 from collections.abc import Callable
 
@@ -304,10 +305,28 @@ class UgreenTelemetryHub:
 
                     payload = parse_telemetry_frame(msg.data)
                     if payload is not None:
+                        _now = time.monotonic()
+                        _last = self.__dict__.get("_last_frame_ts")
+                        self._last_frame_ts = _now
+                        _LOGGER.debug("frame dt=%s usb_sw=%s discharge_pow=%s", "first" if _last is None else f"{_now - _last:.1f}", payload.get("usb_sw"), payload.get("discharge_pow"))
                         prev = self.data if isinstance(self.data, dict) else {}
                         if payload.get("usb_sw") != prev.get("usb_sw"):
                             _LOGGER.debug("usb_sw %r -> %r | raw=%s", prev.get("usb_sw"), payload.get("usb_sw"), msg.data)
-                        self.data = {**prev, **{k: v for k, v in payload.items() if v is not None}}
+                        new = {k: v for k, v in payload.items() if v is not None}
+                        pending = self.__dict__.setdefault("_pending", {})
+                        for key in ("usb_sw",):
+                            if key in new and key in prev and new[key] != prev[key]:
+                                cand = pending.get(key)
+                                if cand is None or cand[0] != new[key]:
+                                    pending[key] = (new[key], _now)
+                                    new[key] = prev[key]
+                                elif _now - cand[1] < 5.0:
+                                    new[key] = prev[key]
+                                else:
+                                    pending.pop(key, None)
+                            else:
+                                pending.pop(key, None)
+                        self.data = {**prev, **new}
                         self._notify()
             finally:
                 keepalive_task.cancel()
