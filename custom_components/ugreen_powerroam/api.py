@@ -304,7 +304,10 @@ class UgreenTelemetryHub:
 
                     payload = parse_telemetry_frame(msg.data)
                     if payload is not None:
-                        self.data = payload
+                        prev = self.data if isinstance(self.data, dict) else {}
+                        if payload.get("usb_sw") != prev.get("usb_sw"):
+                            _LOGGER.debug("usb_sw %r -> %r | raw=%s", prev.get("usb_sw"), payload.get("usb_sw"), msg.data)
+                        self.data = {**prev, **{k: v for k, v in payload.items() if v is not None}}
                         self._notify()
             finally:
                 keepalive_task.cancel()
