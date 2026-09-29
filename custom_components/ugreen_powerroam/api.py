@@ -315,6 +315,18 @@ class UgreenTelemetryHub:
                             payload.get("discharge_pow"),
                         )
                         prev = self.data if isinstance(self.data, dict) else {}
+                        if payload.get("work_mode") != prev.get("work_mode"):
+                            _diff = {
+                                k: (prev.get(k), v)
+                                for k, v in payload.items()
+                                if prev.get(k) != v and not k.startswith("cell")
+                            }
+                            _LOGGER.debug(
+                                "work_mode %r -> %r | diff=%s",
+                                prev.get("work_mode"),
+                                payload.get("work_mode"),
+                                _diff,
+                            )
                         if payload.get("usb_sw") != prev.get("usb_sw"):
                             _LOGGER.debug(
                                 "usb_sw %r -> %r | raw=%s",
@@ -324,7 +336,7 @@ class UgreenTelemetryHub:
                             )
                         new = {k: v for k, v in payload.items() if v is not None}
                         pending = self.__dict__.setdefault("_pending", {})
-                        for key in ("usb_sw",):
+                        for key in ("usb_sw", "work_mode"):
                             if key in new and key in prev and new[key] != prev[key]:
                                 cand = pending.get(key)
                                 if cand is None or cand[0] != new[key]:
